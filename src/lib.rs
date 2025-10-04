@@ -107,7 +107,7 @@ impl App {
     }
 
     fn run(self) {
-        let poisson: PoissonPixelPie = PoissonPixelPie::new(&self.device, &self.queue);
+        let poisson = PoissonPixelPie::new(&self.device, &self.queue);
         let sampler = poisson.new_sampler(self.dims, 20.0, Some(1));
 
         self.event_loop
@@ -129,13 +129,8 @@ impl App {
                             let texture_view = sampler.get_depth_view(&Default::default());
                             // buff.map_async(wgpu::MapMode::Read, .., move |_| {
                             let frame = self.surface.get_current_texture().unwrap_throw();
-                            let blitter = Plotter::new(
-                                &self.device,
-                                self.surface
-                                    .get_default_config(&self.adapter, 1, 1)
-                                    .unwrap()
-                                    .format,
-                            );
+                            let blitter =
+                                Plotter::new(&self.device, wgpu::TextureFormat::Bgra8Unorm);
                             let sampler = self
                                 .device
                                 .create_sampler(&wgpu::SamplerDescriptor::default());
