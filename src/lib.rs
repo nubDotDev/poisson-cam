@@ -1,13 +1,19 @@
-use std::{num::NonZeroU64, sync::Arc};
+use std::{
+    num::NonZeroU64,
+    sync::{Arc, Mutex},
+};
 
 use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    Document, HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window,
+};
 use wgpu::{
-    Adapter, BindGroup, Buffer, Device, Queue, RenderPipeline, Surface, TextureFormat, TextureView,
+    BindGroup, Buffer, Device, Queue, RenderPipeline, Surface, Texture, TextureFormat, TextureView,
     util::DeviceExt,
 };
-use winit::{event_loop::EventLoop, window::Window};
+use winit::{event::Event, event_loop::EventLoop, platform::web, window::Window};
 
 // TODO: Delete.
 #[wasm_bindgen]
@@ -17,17 +23,19 @@ extern "C" {
 
 #[wasm_bindgen]
 pub fn main() {
-    wasm_bindgen_futures::spawn_local(async {
+    spawn_local(async {
         let app = App::new().await;
         app.run();
     });
 }
 
 struct App {
+    // TODO: Remove unnecessary Arcs.
+    window_js: Arc<web_sys::Window>,
+    document: Document,
     event_loop: EventLoop<()>,
     window: Arc<Window>,
-    surface: Surface<'static>,
-    adapter: Adapter,
+    surface: Arc<Surface<'static>>,
     device: Arc<Device>,
     queue: Arc<Queue>,
     poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
@@ -38,34 +46,50 @@ impl App {
     async fn new() -> App {
         use winit::platform::web::WindowBuilderExtWebSys;
 
-        let window_js = window().unwrap_throw();
+        let window_js = Arc::new(window().unwrap_throw());
         let document = window_js.document().unwrap_throw();
 
+        // Stream webcam footage to video element.
         let webcam: HtmlVideoElement = document
             .get_element_by_id("webcam")
             .unwrap_throw()
             .dyn_into()
             .unwrap_throw();
+        let constraints = MediaStreamConstraints::new();
+        constraints.set_video(&JsValue::TRUE);
+        let stream = JsFuture::from(
+            window_js
+                .navigator()
+                .media_devices()
+                .unwrap_throw()
+                .get_user_media_with_constraints(&constraints)
+                .unwrap_throw(),
+        )
+        .await
+        .unwrap_throw();
+        webcam.set_src_object(Some(&stream.dyn_into().unwrap_throw()));
+
+        // Wait for the video element's metadata to load.
+        // We cannot get the video dimensions until this event is triggered.
+        let (tx, rx) = flume::bounded(1);
+        let closure =
+            Closure::wrap(Box::new(|e: web_sys::Event| tx.send(e).unwrap()) as Box<dyn FnMut(_)>);
+        webcam
+            .add_event_listener_with_callback("loadedmetadata", closure.as_ref().unchecked_ref())
+            .unwrap();
+        rx.recv_async().await.unwrap();
+
+        // Set canvas dimensions.
         let canvas: HtmlCanvasElement = document
             .get_element_by_id("canvas")
             .unwrap_throw()
             .dyn_into()
             .unwrap_throw();
+        canvas.set_width(webcam.video_width());
+        canvas.set_height(webcam.video_height());
         let dims = [canvas.width() as u16, canvas.height() as u16];
-        let constraints = MediaStreamConstraints::new();
-        constraints.set_video(&JsValue::TRUE);
-        let callback = Closure::new(move |stream: JsValue| {
-            webcam.set_src_object(Some(&stream.dyn_into().unwrap_throw()))
-        });
-        let _ = window_js
-            .navigator()
-            .media_devices()
-            .unwrap_throw()
-            .get_user_media_with_constraints(&constraints)
-            .unwrap_throw()
-            .then(&callback);
-        callback.forget();
 
+        // Set up wgpu.
         env_logger::init();
         let event_loop = winit::event_loop::EventLoop::new().unwrap_throw();
         let builder = winit::window::WindowBuilder::new().with_canvas(Some(canvas));
@@ -74,7 +98,7 @@ impl App {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).unwrap_throw();
+        let surface = Arc::new(instance.create_surface(window.clone()).unwrap_throw());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -95,7 +119,6 @@ impl App {
             .unwrap_throw();
         let device = Arc::new(device);
         let queue = Arc::new(queue);
-        // TODO: Figure out dimensions.
         let config = surface
             .get_default_config(&adapter, dims[0] as u32, dims[1] as u32)
             .unwrap_throw();
@@ -110,10 +133,11 @@ impl App {
         ));
 
         App {
+            window_js,
+            document,
             event_loop,
             window,
             surface,
-            adapter,
             device,
             queue,
             poisson,
@@ -122,10 +146,10 @@ impl App {
     }
 
     fn run(self) {
+        let is_mapped = Arc::new(Mutex::new(false));
+
         self.event_loop
             .run(move |event, target| {
-                use winit::event::Event;
-
                 if let Event::WindowEvent {
                     window_id: _,
                     event,
@@ -136,31 +160,74 @@ impl App {
                     match event {
                         WindowEvent::RedrawRequested => {
                             console::log_1(&"Redrawing!".into());
+
+                            // self.queue.copy_external_image_to_texture(
+                            //     &wgpu::CopyExternalImageSourceInfo {
+                            //         source: wgpu::ExternalImageSource::HTMLVideoElement(
+                            //             self.document
+                            //                 .get_element_by_id("webcam")
+                            //                 .unwrap_throw()
+                            //                 .dyn_into()
+                            //                 .unwrap_throw(),
+                            //         ),
+                            //         origin: wgpu::Origin2d::ZERO,
+                            //         flip_y: false,
+                            //     },
+                            //     wgpu::wgt::CopyExternalImageDestInfo {
+                            //         texture: todo!(),
+                            //         mip_level: todo!(),
+                            //         origin: todo!(),
+                            //         aspect: todo!(),
+                            //         color_space: todo!(),
+                            //         premultiplied_alpha: todo!(),
+                            //     },
+                            //     wgpu::Extent3d {
+                            //         width: todo!(),
+                            //         height: todo!(),
+                            //         depth_or_array_layers: todo!(),
+                            //     },
+                            // );
+
                             self.poisson.run();
 
                             let buff = self.poisson.get_points_length_ro_buffer().clone();
-                            let frame = self.surface.get_current_texture().unwrap_throw();
                             let mut encoder =
                                 self.device.create_command_encoder(&Default::default());
 
                             let window = self.window.clone();
+                            let surface = self.surface.clone();
                             let queue = self.queue.clone();
                             let plotter = self.plotter.clone();
+
+                            let mut guard = is_mapped.lock().unwrap();
+                            if *guard {
+                                return;
+                            }
+                            *guard = true;
+                            let is_mapped = is_mapped.clone();
 
                             let (tx, rx) = flume::bounded(1);
                             buff.map_async(wgpu::MapMode::Read, .., move |r| tx.send(r).unwrap());
                             self.device.poll(wgpu::PollType::Wait).unwrap();
-                            wasm_bindgen_futures::spawn_local(async move {
+                            spawn_local(async move {
                                 rx.recv_async().await.unwrap().unwrap();
                                 let points_length: u32 =
                                     bytemuck::cast_slice(&buff.get_mapped_range(..))[0];
+                                buff.unmap();
+                                queue.submit([]);
 
+                                let frame = surface.get_current_texture().unwrap_throw();
                                 let view = frame.texture.create_view(&Default::default());
                                 plotter.plot(&mut encoder, &view, points_length);
 
                                 queue.submit([encoder.finish()]);
                                 window.pre_present_notify();
                                 frame.present();
+
+                                *is_mapped.lock().unwrap() = false;
+                                console::log_1(&"unmapped".into());
+
+                                // window.request_redraw();
                             });
                         }
                         WindowEvent::CloseRequested => target.exit(),
@@ -172,19 +239,19 @@ impl App {
     }
 }
 
-pub struct Plotter {
+struct Plotter {
     pipeline: RenderPipeline,
     bind_group: BindGroup,
     radius_uniform: Buffer,
 }
 
 impl Plotter {
-    pub fn new(
+    fn new(
         device: &Device,
         poisson: &PoissonPixelPie<Arc<Device>, Arc<Queue>>,
         texture_format: TextureFormat,
         radius: f32,
-    ) -> Self {
+    ) -> Plotter {
         let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -290,7 +357,7 @@ impl Plotter {
                 view: view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -306,5 +373,28 @@ impl Plotter {
 
     fn get_radius_uniform(&self) -> &Buffer {
         &self.radius_uniform
+    }
+}
+
+struct WebcamToRadii {
+    texture: Texture,
+}
+
+impl WebcamToRadii {
+    fn new(device: &Device) -> WebcamToRadii {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("webcam"),
+            size: wgpu::Extent3d {
+                width: todo!(),
+                height: todo!(),
+                depth_or_array_layers: todo!(),
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: todo!(),
+            usage: todo!(),
+            view_formats: todo!(),
+        });
     }
 }

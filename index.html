@@ -6,8 +6,14 @@
     <title>Poisson Cam</title>
   </head>
   <body>
-    <video autoplay="true" id="webcam"></video>
-    <canvas id="canvas"></canvas>
+    <div>
+      <div>
+        <video autoplay="true" id="webcam" width="75%"></video>
+      </div>
+      <div>
+        <canvas id="canvas" style="width: 75%"></canvas>
+      </div>
+    </div>
 
     <script type="module">
       import init, { main } from "./pkg/poisson_cam.js";
