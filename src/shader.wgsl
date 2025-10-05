@@ -52,3 +52,45 @@ fn carve_circle(
     }
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
+
+@group(0) @binding(3)
+var texture: texture_2d<f32>;
+
+@group(0) @binding(4)
+var<storage, read_write> radii: array<f32>;
+
+@group(0) @binding(5)
+var<uniform> r_bounds: vec2<f32>;
+
+@group(0) @binding(6)
+var<uniform> mode: u32;
+
+@compute @workgroup_size(64)
+fn calc_radii(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) num_workgroups: vec3<u32>
+) {
+    let idx = global_id.x + global_id.y * num_workgroups.x * 64;
+    if idx < dims.x * dims.y {
+        let coord = vec2<u32>(idx % dims.x, idx / dims.x);
+        let color = textureLoad(texture, coord, 0);
+        var t: f32;
+        switch mode {
+            case 0: { t = bgra_to_luma(color); }
+            case 1: { t = 1.0 - bgra_to_luma(color); }
+            case 2: { t = color.z; }
+            case 3: { t = color.y; }
+            case 4: { t = color.x; }
+            default: { return; }
+        }
+        radii[idx] = inverseSqrt(
+            t / (r_bounds.y * r_bounds.y) + (1.0 - t) / (r_bounds.x * r_bounds.x)
+        );
+    }
+}
+
+fn bgra_to_luma(color: vec4<f32>) -> f32 {
+    return 0.298936021293775 * color.z +
+        0.587043074451121 * color.y +
+        0.114020904255103 * color.x;
+}

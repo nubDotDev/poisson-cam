@@ -10,8 +10,8 @@ use web_sys::{
     Document, HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window,
 };
 use wgpu::{
-    BindGroup, Buffer, Device, Queue, RenderPipeline, Surface, Texture, TextureFormat, TextureView,
-    util::DeviceExt,
+    BindGroup, Buffer, CommandEncoder, ComputePipeline, Device, Queue, RenderPipeline, Surface,
+    Texture, TextureFormat, TextureView, util::DeviceExt,
 };
 use winit::{event::Event, event_loop::EventLoop, platform::web, window::Window};
 
@@ -40,6 +40,7 @@ struct App {
     queue: Arc<Queue>,
     poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
     plotter: Arc<Plotter>,
+    webcam_to_radii: WebcamToRadii,
 }
 
 impl App {
@@ -125,12 +126,9 @@ impl App {
         surface.configure(&device, &config);
 
         let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 5.0, Some(1));
-        let plotter = Arc::new(Plotter::new(
-            &device,
-            &poisson,
-            surface.get_capabilities(&adapter).formats[0],
-            0.5,
-        ));
+        let texture_format = surface.get_capabilities(&adapter).formats[0];
+        let plotter = Arc::new(Plotter::new(&device, &poisson, texture_format, 0.5));
+        let webcam_to_radii = WebcamToRadii::new(&device, &poisson, [1.5, 10.0], RadiusMode::Shade);
 
         App {
             window_js,
@@ -142,6 +140,7 @@ impl App {
             queue,
             poisson,
             plotter,
+            webcam_to_radii,
         }
     }
 
@@ -159,40 +158,33 @@ impl App {
 
                     match event {
                         WindowEvent::RedrawRequested => {
-                            console::log_1(&"Redrawing!".into());
-
-                            // self.queue.copy_external_image_to_texture(
-                            //     &wgpu::CopyExternalImageSourceInfo {
-                            //         source: wgpu::ExternalImageSource::HTMLVideoElement(
-                            //             self.document
-                            //                 .get_element_by_id("webcam")
-                            //                 .unwrap_throw()
-                            //                 .dyn_into()
-                            //                 .unwrap_throw(),
-                            //         ),
-                            //         origin: wgpu::Origin2d::ZERO,
-                            //         flip_y: false,
-                            //     },
-                            //     wgpu::wgt::CopyExternalImageDestInfo {
-                            //         texture: todo!(),
-                            //         mip_level: todo!(),
-                            //         origin: todo!(),
-                            //         aspect: todo!(),
-                            //         color_space: todo!(),
-                            //         premultiplied_alpha: todo!(),
-                            //     },
-                            //     wgpu::Extent3d {
-                            //         width: todo!(),
-                            //         height: todo!(),
-                            //         depth_or_array_layers: todo!(),
-                            //     },
-                            // );
-
-                            self.poisson.run();
-
-                            let buff = self.poisson.get_points_length_ro_buffer().clone();
                             let mut encoder =
                                 self.device.create_command_encoder(&Default::default());
+                            self.queue.copy_external_image_to_texture(
+                                &wgpu::CopyExternalImageSourceInfo {
+                                    source: wgpu::ExternalImageSource::HTMLVideoElement(
+                                        self.document
+                                            .get_element_by_id("webcam")
+                                            .unwrap_throw()
+                                            .dyn_into()
+                                            .unwrap_throw(),
+                                    ),
+                                    origin: wgpu::Origin2d::ZERO,
+                                    flip_y: false,
+                                },
+                                wgpu::wgt::CopyExternalImageDestInfo {
+                                    texture: &self.webcam_to_radii.texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                    color_space: wgpu::PredefinedColorSpace::Srgb,
+                                    premultiplied_alpha: false,
+                                },
+                                self.webcam_to_radii.texture.size(),
+                            );
+                            self.webcam_to_radii.run(&mut encoder);
+                            // self.poisson.set_seed(None);
+                            self.poisson.run();
 
                             let window = self.window.clone();
                             let surface = self.surface.clone();
@@ -206,6 +198,7 @@ impl App {
                             *guard = true;
                             let is_mapped = is_mapped.clone();
 
+                            let buff = self.poisson.get_points_length_ro_buffer().clone();
                             let (tx, rx) = flume::bounded(1);
                             buff.map_async(wgpu::MapMode::Read, .., move |r| tx.send(r).unwrap());
                             self.device.poll(wgpu::PollType::Wait).unwrap();
@@ -218,16 +211,15 @@ impl App {
 
                                 let frame = surface.get_current_texture().unwrap_throw();
                                 let view = frame.texture.create_view(&Default::default());
-                                plotter.plot(&mut encoder, &view, points_length);
+                                plotter.run(&mut encoder, &view, points_length);
 
                                 queue.submit([encoder.finish()]);
                                 window.pre_present_notify();
                                 frame.present();
 
                                 *is_mapped.lock().unwrap() = false;
-                                console::log_1(&"unmapped".into());
 
-                                // window.request_redraw();
+                                window.request_redraw();
                             });
                         }
                         WindowEvent::CloseRequested => target.exit(),
@@ -350,7 +342,7 @@ impl Plotter {
         }
     }
 
-    fn plot(&self, encoder: &mut wgpu::CommandEncoder, view: &TextureView, points_length: u32) {
+    fn run(&self, encoder: &mut CommandEncoder, view: &TextureView, points_length: u32) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("plotter"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -370,31 +362,180 @@ impl Plotter {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3 * points_length, 0..1);
     }
-
-    fn get_radius_uniform(&self) -> &Buffer {
-        &self.radius_uniform
-    }
 }
 
 struct WebcamToRadii {
+    pipeline: ComputePipeline,
+    bind_group: BindGroup,
     texture: Texture,
+    dims: [u16; 2],
 }
 
 impl WebcamToRadii {
-    fn new(device: &Device) -> WebcamToRadii {
+    fn new(
+        device: &Device,
+        poisson: &PoissonPixelPie<Arc<Device>, Arc<Queue>>,
+        r_bounds: [f32; 2],
+        mode: RadiusMode,
+    ) -> WebcamToRadii {
+        let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("calc_radii"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(8).unwrap()),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(8).unwrap()),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("calc_radii"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("calc_radii"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("calc_radii"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("webcam"),
-            size: wgpu::Extent3d {
-                width: todo!(),
-                height: todo!(),
-                depth_or_array_layers: todo!(),
-            },
+            size: poisson.get_depth_view(&Default::default()).texture().size(),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: todo!(),
-            usage: todo!(),
-            view_formats: todo!(),
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
+
+        let r_bounds_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("r_bounds"),
+            contents: bytemuck::cast_slice(&r_bounds),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let mode_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mode"),
+            contents: bytemuck::cast_slice(&[mode as u32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("calc_radii"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: poisson.get_dims_uniform().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: poisson.get_radii_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: r_bounds_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: mode_uniform.as_entire_binding(),
+                },
+            ],
+        });
+
+        WebcamToRadii {
+            pipeline,
+            bind_group,
+            texture,
+            dims: poisson.get_dims(),
+        }
     }
+
+    fn run(&self, encoder: &mut CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("calc_radii"),
+            timestamp_writes: None,
+        });
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+
+        let workgroup_count = (self.dims[0] as u32 * self.dims[1] as u32).div_ceil(64);
+        pass.dispatch_workgroups(
+            workgroup_count.min(32768),
+            workgroup_count.div_ceil(32768),
+            1,
+        );
+    }
+}
+
+enum RadiusMode {
+    Highlight,
+    Shade,
+    Red,
+    Green,
+    Blue,
 }
