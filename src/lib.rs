@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use faster_poisson::{PixelPieSampler, PoissonPixelPie};
+use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window};
 use wgpu::{Adapter, Device, Queue, Surface};
@@ -25,9 +25,10 @@ struct App {
     window: Arc<Window>,
     surface: Surface<'static>,
     adapter: Adapter,
-    device: Device,
-    queue: Queue,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
     dims: [u16; 2],
+    poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
 }
 
 impl App {
@@ -89,11 +90,15 @@ impl App {
             })
             .await
             .unwrap_throw();
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
         // TODO: Figure out dimensions.
         let config = surface
             .get_default_config(&adapter, dims[0] as u32, dims[1] as u32)
             .unwrap_throw();
         surface.configure(&device, &config);
+
+        let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 20.0, Some(1));
 
         App {
             event_loop,
@@ -103,15 +108,13 @@ impl App {
             device,
             queue,
             dims,
+            poisson,
         }
     }
 
     fn run(self) {
-        let poisson = PoissonPixelPie::new(&self.device, &self.queue);
-        let sampler = poisson.new_sampler(self.dims, 20.0, Some(1));
-
         self.event_loop
-            .run(|event, target| {
+            .run(move |event, target| {
                 use winit::event::Event;
 
                 if let Event::WindowEvent {
@@ -123,11 +126,11 @@ impl App {
 
                     match event {
                         WindowEvent::RedrawRequested => {
-                            sampler.run();
+                            self.poisson.run();
 
-                            let buff = sampler.get_points_length_ro_buffer();
-                            let texture_view = sampler.get_depth_view(&Default::default());
-                            // buff.map_async(wgpu::MapMode::Read, .., move |_| {
+                            let buff = self.poisson.get_points_length_ro_buffer();
+                            let texture_view = self.poisson.get_depth_view(&Default::default());
+                            // buff.map_async(wgpu::MapMode::Read, .., |_| {
                             let frame = self.surface.get_current_texture().unwrap_throw();
                             let blitter =
                                 Plotter::new(&self.device, wgpu::TextureFormat::Bgra8Unorm);
