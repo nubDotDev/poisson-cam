@@ -3,7 +3,7 @@ use std::sync::Arc;
 use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window};
-use wgpu::{Adapter, Device, Queue, Surface};
+use wgpu::{Device, Queue, Surface};
 use winit::{event_loop::EventLoop, window::Window};
 
 // TODO: Delete.
@@ -23,11 +23,9 @@ pub fn main() {
 struct App {
     event_loop: EventLoop<()>,
     window: Arc<Window>,
-    surface: Surface<'static>,
-    adapter: Adapter,
+    surface: Arc<Surface<'static>>,
     device: Arc<Device>,
     queue: Arc<Queue>,
-    dims: [u16; 2],
     poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
 }
 
@@ -71,7 +69,7 @@ impl App {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).unwrap_throw();
+        let surface = Arc::new(instance.create_surface(window.clone()).unwrap_throw());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -104,10 +102,8 @@ impl App {
             event_loop,
             window,
             surface,
-            adapter,
             device,
             queue,
-            dims,
             poisson,
         }
     }
@@ -130,27 +126,27 @@ impl App {
 
                             let buff = self.poisson.get_points_length_ro_buffer();
                             let texture_view = self.poisson.get_depth_view(&Default::default());
-                            // buff.map_async(wgpu::MapMode::Read, .., |_| {
-                            let frame = self.surface.get_current_texture().unwrap_throw();
-                            let blitter =
-                                Plotter::new(&self.device, wgpu::TextureFormat::Bgra8Unorm);
-                            let sampler = self
-                                .device
-                                .create_sampler(&wgpu::SamplerDescriptor::default());
-                            let view = frame.texture.create_view(&Default::default());
-                            let mut encoder =
-                                self.device.create_command_encoder(&Default::default());
-                            blitter.blit(
-                                &self.device,
-                                &mut encoder,
-                                &view,
-                                &texture_view,
-                                &sampler,
-                            );
-                            self.queue.submit([encoder.finish()]);
-                            self.window.pre_present_notify();
-                            frame.present();
-                            // });
+
+                            let window = self.window.clone();
+                            let surface = self.surface.clone();
+                            let device = self.device.clone();
+                            let queue = self.queue.clone();
+
+                            buff.map_async(wgpu::MapMode::Read, .., move |_| {
+                                console::log_1(&"hey!".into());
+                                let frame = surface.get_current_texture().unwrap_throw();
+                                let blitter =
+                                    Plotter::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+                                let sampler =
+                                    device.create_sampler(&wgpu::SamplerDescriptor::default());
+                                let view = frame.texture.create_view(&Default::default());
+                                let mut encoder =
+                                    device.create_command_encoder(&Default::default());
+                                blitter.blit(&device, &mut encoder, &view, &texture_view, &sampler);
+                                queue.submit([encoder.finish()]);
+                                window.pre_present_notify();
+                                frame.present();
+                            });
                         }
                         WindowEvent::CloseRequested => target.exit(),
                         _ => {}
