@@ -14,6 +14,8 @@ winit = { version = "0.29" }
 wgpu = "26.0.1"
 env_logger = "0.11.8"
 wasm-bindgen-futures = "0.4.54"
+bytemuck = "1.24.0"
+flume = "0.11.1"
 
 [dependencies.web-sys]
 version = "0.3.81"

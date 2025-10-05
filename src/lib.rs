@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window};
-use wgpu::{Device, Queue, Surface};
+use wgpu::{
+    Adapter, BindGroup, Buffer, Device, Queue, RenderPipeline, Surface, TextureFormat, TextureView,
+    util::DeviceExt,
+};
 use winit::{event_loop::EventLoop, window::Window};
 
 // TODO: Delete.
@@ -23,10 +26,12 @@ pub fn main() {
 struct App {
     event_loop: EventLoop<()>,
     window: Arc<Window>,
-    surface: Arc<Surface<'static>>,
+    surface: Surface<'static>,
+    adapter: Adapter,
     device: Arc<Device>,
     queue: Arc<Queue>,
     poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
+    plotter: Arc<Plotter>,
 }
 
 impl App {
@@ -69,7 +74,7 @@ impl App {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         });
-        let surface = Arc::new(instance.create_surface(window.clone()).unwrap_throw());
+        let surface = instance.create_surface(window.clone()).unwrap_throw();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -97,14 +102,22 @@ impl App {
         surface.configure(&device, &config);
 
         let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 20.0, Some(1));
+        let plotter = Arc::new(Plotter::new(
+            &device,
+            &poisson,
+            surface.get_capabilities(&adapter).formats[0],
+            3.0,
+        ));
 
         App {
             event_loop,
             window,
             surface,
+            adapter,
             device,
             queue,
             poisson,
+            plotter,
         }
     }
 
@@ -122,27 +135,29 @@ impl App {
 
                     match event {
                         WindowEvent::RedrawRequested => {
+                            console::log_1(&"Redrawing!".into());
                             self.poisson.run();
 
-                            let buff = self.poisson.get_points_length_ro_buffer();
-                            let texture_view = self.poisson.get_depth_view(&Default::default());
+                            let buff = self.poisson.get_points_length_ro_buffer().clone();
+                            let frame = self.surface.get_current_texture().unwrap_throw();
+                            let mut encoder =
+                                self.device.create_command_encoder(&Default::default());
 
                             let window = self.window.clone();
-                            let surface = self.surface.clone();
-                            let device = self.device.clone();
                             let queue = self.queue.clone();
+                            let plotter = self.plotter.clone();
 
-                            buff.map_async(wgpu::MapMode::Read, .., move |_| {
-                                console::log_1(&"hey!".into());
-                                let frame = surface.get_current_texture().unwrap_throw();
-                                let blitter =
-                                    Plotter::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-                                let sampler =
-                                    device.create_sampler(&wgpu::SamplerDescriptor::default());
+                            let (tx, rx) = flume::bounded(1);
+                            buff.map_async(wgpu::MapMode::Read, .., move |r| tx.send(r).unwrap());
+                            self.device.poll(wgpu::PollType::Wait).unwrap();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                rx.recv_async().await.unwrap().unwrap();
+                                let points_length: u32 =
+                                    bytemuck::cast_slice(&buff.get_mapped_range(..))[0];
+
                                 let view = frame.texture.create_view(&Default::default());
-                                let mut encoder =
-                                    device.create_command_encoder(&Default::default());
-                                blitter.blit(&device, &mut encoder, &view, &texture_view, &sampler);
+                                plotter.plot(&mut encoder, &view, points_length);
+
                                 queue.submit([encoder.finish()]);
                                 window.pre_present_notify();
                                 frame.present();
@@ -158,30 +173,50 @@ impl App {
 }
 
 pub struct Plotter {
-    pipeline: wgpu::RenderPipeline,
-    layout: wgpu::BindGroupLayout,
+    pipeline: RenderPipeline,
+    bind_group: BindGroup,
+    radius_uniform: Buffer,
 }
 
 impl Plotter {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+    pub fn new(
+        device: &Device,
+        poisson: &PoissonPixelPie<Arc<Device>, Arc<Queue>>,
+        texture_format: TextureFormat,
+        radius: f32,
+    ) -> Self {
+        let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("blit layout"),
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("plotter"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(8).unwrap()),
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()),
                     },
                     count: None,
                 },
@@ -189,24 +224,24 @@ impl Plotter {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("blit pipeline layout"),
-            bind_group_layouts: &[&layout],
+            label: Some("plotter"),
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("blit pipeline"),
+            label: Some("plotter"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
+                module: &module,
+                entry_point: Some("emit_triangle"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(format.into())],
+                module: &module,
+                entry_point: Some("carve_circle"),
+                targets: &[Some(texture_format.into())],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
@@ -216,36 +251,43 @@ impl Plotter {
             cache: None,
         });
 
-        Self { pipeline, layout }
-    }
+        let radius_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("radius"),
+            contents: bytemuck::cast_slice(&[radius]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
-    pub fn blit(
-        &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        src: &wgpu::TextureView,
-        sampler: &wgpu::Sampler,
-    ) {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit bind group"),
-            layout: &self.layout,
+            label: Some("plotter"),
+            layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Sampler(sampler),
+                    resource: poisson.get_dims_uniform().as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(src),
+                    resource: radius_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: poisson.get_points_buffer().as_entire_binding(),
                 },
             ],
         });
 
+        Plotter {
+            pipeline,
+            bind_group,
+            radius_uniform,
+        }
+    }
+
+    fn plot(&self, encoder: &mut wgpu::CommandEncoder, view: &TextureView, points_length: u32) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("blit pass"),
+            label: Some("plotter"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
+                view: view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -258,7 +300,11 @@ impl Plotter {
         });
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3 * points_length, 0..1);
+    }
+
+    fn get_radius_uniform(&self) -> &Buffer {
+        &self.radius_uniform
     }
 }
