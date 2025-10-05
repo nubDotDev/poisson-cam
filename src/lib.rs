@@ -124,12 +124,12 @@ impl App {
             .unwrap_throw();
         surface.configure(&device, &config);
 
-        let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 20.0, Some(1));
+        let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 5.0, Some(1));
         let plotter = Arc::new(Plotter::new(
             &device,
             &poisson,
             surface.get_capabilities(&adapter).formats[0],
-            3.0,
+            0.5,
         ));
 
         App {

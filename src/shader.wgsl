@@ -26,9 +26,8 @@ fn emit_triangle(@builtin(vertex_index) idx: u32) -> VertexOutput {
     let x = dart >> 18;
     let y = (dart & 65535) >> 2;
 
-    // Unpack fixed point coordinates.
-    let x_sub = f32(dart >> 16) / 4.0;
-    let y_sub = f32(dart & (65535)) / 4.0;
+    let x_sub = f32(x) + 0.5;
+    let y_sub = f32(y) + 0.5;
 
     // The triangle's incircle's radius is the desired radius of the final circle. 
     var out: VertexOutput;
