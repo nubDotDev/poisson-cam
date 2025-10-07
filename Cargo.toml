@@ -7,15 +7,15 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-getrandom = { version = "0.3.3", features = ["wasm_js"] }
-wasm-bindgen = "0.2.104"
-winit = { version = "0.29" }
-wgpu = "26.0.1"
-env_logger = "0.11.8"
-wasm-bindgen-futures = "0.4.54"
 bytemuck = "1.24.0"
+env_logger = "0.11.8"
 flume = "0.11.1"
 faster_poisson = { version = "1.2.0", features = ["gpu"] }
+getrandom = { version = "0.3.3", features = ["wasm_js"] }
+wasm-bindgen = "0.2.104"
+wasm-bindgen-futures = "0.4.54"
+wgpu = "26.0.1"
+winit = { version = "0.29" }
 
 [dependencies.web-sys]
 version = "0.3.81"
