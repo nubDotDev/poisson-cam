@@ -30,5 +30,6 @@ features = [
     "MediaStreamConstraints",
     "HtmlCanvasElement",
     "console",
+    "HtmlInputElement",
     # "EventTarget",
 ]

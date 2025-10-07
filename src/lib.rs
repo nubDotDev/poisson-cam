@@ -7,19 +7,14 @@ use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
-    Document, HtmlCanvasElement, HtmlVideoElement, MediaStreamConstraints, console, window,
+    Document, HtmlCanvasElement, HtmlInputElement, HtmlVideoElement, MediaStreamConstraints,
+    console, window,
 };
 use wgpu::{
     BindGroup, Buffer, CommandEncoder, ComputePipeline, Device, Queue, RenderPipeline, Surface,
     Texture, TextureFormat, TextureView, util::DeviceExt,
 };
 use winit::{event::Event, event_loop::EventLoop, platform::web, window::Window};
-
-// TODO: Delete.
-#[wasm_bindgen]
-extern "C" {
-    pub fn alert(s: &str);
-}
 
 #[wasm_bindgen]
 pub fn main() {
@@ -40,7 +35,7 @@ struct App {
     queue: Arc<Queue>,
     poisson: PoissonPixelPie<Arc<Device>, Arc<Queue>>,
     plotter: Arc<Plotter>,
-    webcam_to_radii: WebcamToRadii,
+    webcam_to_radii: Arc<WebcamToRadii>,
 }
 
 impl App {
@@ -73,11 +68,13 @@ impl App {
         // Wait for the video element's metadata to load.
         // We cannot get the video dimensions until this event is triggered.
         let (tx, rx) = flume::bounded(1);
-        let closure =
-            Closure::wrap(Box::new(|e: web_sys::Event| tx.send(e).unwrap()) as Box<dyn FnMut(_)>);
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            tx.send(e).unwrap();
+        });
         webcam
             .add_event_listener_with_callback("loadedmetadata", closure.as_ref().unchecked_ref())
             .unwrap();
+        closure.forget();
         rx.recv_async().await.unwrap();
 
         // Set canvas dimensions.
@@ -125,10 +122,15 @@ impl App {
             .unwrap_throw();
         surface.configure(&device, &config);
 
-        let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 5.0, Some(1));
+        let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 1.0, Some(1));
         let texture_format = surface.get_capabilities(&adapter).formats[0];
         let plotter = Arc::new(Plotter::new(&device, &poisson, texture_format, 0.5));
-        let webcam_to_radii = WebcamToRadii::new(&device, &poisson, [1.5, 10.0], RadiusMode::Shade);
+        let webcam_to_radii = Arc::new(WebcamToRadii::new(
+            &device,
+            &poisson,
+            [1.0, 10.0],
+            RadiusMode::Shade,
+        ));
 
         App {
             window_js,
@@ -146,6 +148,82 @@ impl App {
 
     fn run(self) {
         let is_mapped = Arc::new(Mutex::new(false));
+        // let mut seed = 1;
+
+        let min_radius_slider: HtmlInputElement = self
+            .document
+            .get_element_by_id("min-radius")
+            .unwrap_throw()
+            .dyn_into()
+            .unwrap_throw();
+        let queue = self.queue.clone();
+        let webcam_to_radii = self.webcam_to_radii.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            queue.write_buffer(
+                &webcam_to_radii.r_bounds_uniform,
+                0,
+                bytemuck::cast_slice(&[e
+                    .current_target()
+                    .unwrap()
+                    .dyn_into::<HtmlInputElement>()
+                    .unwrap()
+                    .value_as_number() as f32]),
+            );
+        });
+        min_radius_slider
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+
+        let max_radius_slider: HtmlInputElement = self
+            .document
+            .get_element_by_id("max-radius")
+            .unwrap_throw()
+            .dyn_into()
+            .unwrap_throw();
+        let queue = self.queue.clone();
+        let webcam_to_radii = self.webcam_to_radii.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            queue.write_buffer(
+                &webcam_to_radii.r_bounds_uniform,
+                4,
+                bytemuck::cast_slice(&[e
+                    .current_target()
+                    .unwrap()
+                    .dyn_into::<HtmlInputElement>()
+                    .unwrap()
+                    .value_as_number() as f32]),
+            );
+        });
+        max_radius_slider
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+
+        let dot_radius_slider: HtmlInputElement = self
+            .document
+            .get_element_by_id("dot-radius")
+            .unwrap_throw()
+            .dyn_into()
+            .unwrap_throw();
+        let queue = self.queue.clone();
+        let plotter = self.plotter.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            queue.write_buffer(
+                &plotter.radius_uniform,
+                0,
+                bytemuck::cast_slice(&[e
+                    .current_target()
+                    .unwrap()
+                    .dyn_into::<HtmlInputElement>()
+                    .unwrap()
+                    .value_as_number() as f32]),
+            );
+        });
+        dot_radius_slider
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
 
         self.event_loop
             .run(move |event, target| {
@@ -183,7 +261,8 @@ impl App {
                                 self.webcam_to_radii.texture.size(),
                             );
                             self.webcam_to_radii.run(&mut encoder);
-                            // self.poisson.set_seed(None);
+                            // self.poisson.set_seed(Some(seed));
+                            // seed += 1;
                             self.poisson.run();
 
                             let window = self.window.clone();
@@ -360,7 +439,10 @@ impl Plotter {
 
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+
         pass.draw(0..3 * points_length, 0..1);
+
+        drop(pass);
     }
 }
 
@@ -368,6 +450,7 @@ struct WebcamToRadii {
     pipeline: ComputePipeline,
     bind_group: BindGroup,
     texture: Texture,
+    r_bounds_uniform: Buffer,
     dims: [u16; 2],
 }
 
@@ -510,6 +593,7 @@ impl WebcamToRadii {
             pipeline,
             bind_group,
             texture,
+            r_bounds_uniform,
             dims: poisson.get_dims(),
         }
     }
@@ -529,9 +613,12 @@ impl WebcamToRadii {
             workgroup_count.div_ceil(32768),
             1,
         );
+
+        drop(pass);
     }
 }
 
+#[derive(Clone, Copy)]
 enum RadiusMode {
     Highlight,
     Shade,

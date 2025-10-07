@@ -83,14 +83,16 @@ fn calc_radii(
             case 4: { t = color.x; }
             default: { return; }
         }
-        radii[idx] = inverseSqrt(
-            t / (r_bounds.y * r_bounds.y) + (1.0 - t) / (r_bounds.x * r_bounds.x)
-        );
+        // radii[idx] = inverseSqrt(
+        //     t / (r_bounds.x * r_bounds.x) + (1.0 - t) / (r_bounds.y * r_bounds.y)
+        // );
+        radii[idx] = t * r_bounds.x + (1.0 - t) * r_bounds.y;
     }
 }
 
 fn bgra_to_luma(color: vec4<f32>) -> f32 {
-    return 0.298936021293775 * color.z +
-        0.587043074451121 * color.y +
-        0.114020904255103 * color.x;
+    return 0.299 * color.z +
+        0.587 * color.y +
+        0.114 * color.x;
+    // return dot(color.xyz, vec3<f32>(0.0722, 0.7152, 0.2126));
 }
