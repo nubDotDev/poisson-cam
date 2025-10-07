@@ -1,0 +1,15 @@
+{
+  "name": "poisson-cam",
+  "type": "module",
+  "version": "1.0.0",
+  "files": [
+    "poisson_cam_bg.wasm",
+    "poisson_cam.js",
+    "poisson_cam.d.ts"
+  ],
+  "main": "poisson_cam.js",
+  "types": "poisson_cam.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
