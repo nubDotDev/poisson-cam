@@ -7,14 +7,13 @@ use faster_poisson::PoissonPixelPie;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
-    Document, HtmlCanvasElement, HtmlInputElement, HtmlVideoElement, MediaStreamConstraints,
-    console, window,
+    Document, HtmlCanvasElement, HtmlInputElement, HtmlVideoElement, MediaStreamConstraints, window,
 };
 use wgpu::{
     BindGroup, Buffer, CommandEncoder, ComputePipeline, Device, Queue, RenderPipeline, Surface,
     Texture, TextureFormat, TextureView, util::DeviceExt,
 };
-use winit::{event::Event, event_loop::EventLoop, platform::web, window::Window};
+use winit::{event::Event, event_loop::EventLoop, window::Window};
 
 #[wasm_bindgen]
 pub fn main() {
@@ -26,7 +25,6 @@ pub fn main() {
 
 struct App {
     // TODO: Remove unnecessary Arcs.
-    window_js: Arc<web_sys::Window>,
     document: Document,
     event_loop: EventLoop<()>,
     window: Arc<Window>,
@@ -134,7 +132,6 @@ impl App {
         ));
 
         App {
-            window_js,
             document,
             event_loop,
             window,
