@@ -4,43 +4,73 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Poisson Cam</title>
+
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
+      crossorigin="anonymous"
+    />
   </head>
   <body>
     <video autoplay="true" id="webcam" hidden></video>
     <div>
-      <div style="display: flex; justify-content: center">
+      <div class="d-flex justify-content-center">
         <canvas id="canvas" style="width: 50%"></canvas>
       </div>
-      <div>
+      <div class="d-flex flex-column align-items-center">
         <!-- <p id="radius-label"></p>
         <div id="radius-slider"></div> -->
-        <label for="min-radius">Min Radius</label>
-        <input
-          type="range"
-          id="min-radius"
-          value="1.0"
-          min="0.5"
-          max="20.0"
-          step="0.1"
-        />
-        <label for="max-radius">Max Radius</label>
-        <input
-          type="range"
-          id="max-radius"
-          value="10.0"
-          min="0.5"
-          max="20.0"
-          step="0.1"
-        />
-        <label for="dot-radius">Dot Radius</label>
-        <input
-          type="range"
-          id="dot-radius"
-          value="0.5"
-          min="0.5"
-          max="5.5"
-          step="0.1"
-        />
+        <div>
+          <label for="min-radius">Min Radius</label>
+          <input
+            type="range"
+            id="min-radius"
+            value="0.5"
+            min="0.1"
+            max="20.0"
+            step="0.1"
+          />
+        </div>
+
+        <div>
+          <label for="max-radius">Max Radius</label>
+          <input
+            type="range"
+            id="max-radius"
+            value="10.0"
+            min="0.1"
+            max="20.0"
+            step="0.1"
+          />
+        </div>
+        <div>
+          <label for="dot-radius">Dot Radius</label>
+          <input
+            type="range"
+            id="dot-radius"
+            value="0.5"
+            min="0.5"
+            max="9.5"
+            step="0.1"
+          />
+        </div>
+        <div>
+          <label for="magic">Magic Number</label>
+          <input
+            type="range"
+            id="magic"
+            value="0.95"
+            min="-2.95"
+            max="2.95"
+            step="0.1"
+          />
+        </div>
+        <!-- TODO -->
+        <!-- <div>
+          <label for="reseed">Reseed</label>
+          <input type="checkbox" id="reseed" />
+        </div> -->
       </div>
     </div>
 

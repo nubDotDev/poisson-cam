@@ -128,8 +128,9 @@ impl App {
         let webcam_to_radii = Arc::new(WebcamToRadii::new(
             &device,
             &poisson,
-            [1.0, 10.0],
+            [0.5, 10.0],
             RadiusMode::Shade,
+            0.95,
         ));
 
         App {
@@ -221,6 +222,31 @@ impl App {
             );
         });
         dot_radius_slider
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+
+        let magic_slider: HtmlInputElement = self
+            .document
+            .get_element_by_id("magic")
+            .unwrap_throw()
+            .dyn_into()
+            .unwrap_throw();
+        let queue = self.queue.clone();
+        let webcam_to_radii = self.webcam_to_radii.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            queue.write_buffer(
+                &webcam_to_radii.magic_uniform,
+                0,
+                bytemuck::cast_slice(&[e
+                    .current_target()
+                    .unwrap()
+                    .dyn_into::<HtmlInputElement>()
+                    .unwrap()
+                    .value_as_number() as f32]),
+            );
+        });
+        magic_slider
             .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
@@ -451,6 +477,7 @@ struct WebcamToRadii {
     bind_group: BindGroup,
     texture: Texture,
     r_bounds_uniform: Buffer,
+    magic_uniform: Buffer,
     dims: [u16; 2],
 }
 
@@ -460,6 +487,7 @@ impl WebcamToRadii {
         poisson: &PoissonPixelPie<Arc<Device>, Arc<Queue>>,
         r_bounds: [f32; 2],
         mode: RadiusMode,
+        magic: f32,
     ) -> WebcamToRadii {
         let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
@@ -516,6 +544,16 @@ impl WebcamToRadii {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -560,6 +598,12 @@ impl WebcamToRadii {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let magic_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("magic"),
+            contents: bytemuck::cast_slice(&[magic]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("calc_radii"),
             layout: &bind_group_layout,
@@ -586,6 +630,10 @@ impl WebcamToRadii {
                     binding: 6,
                     resource: mode_uniform.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: magic_uniform.as_entire_binding(),
+                },
             ],
         });
 
@@ -594,6 +642,7 @@ impl WebcamToRadii {
             bind_group,
             texture,
             r_bounds_uniform,
+            magic_uniform,
             dims: poisson.get_dims(),
         }
     }

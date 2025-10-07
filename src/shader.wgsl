@@ -65,6 +65,9 @@ var<uniform> r_bounds: vec2<f32>;
 @group(0) @binding(6)
 var<uniform> mode: u32;
 
+@group(0) @binding(7)
+var<uniform> magic: f32;
+
 @compute @workgroup_size(64)
 fn calc_radii(
     @builtin(global_invocation_id) global_id: vec3<u32>,
@@ -83,10 +86,14 @@ fn calc_radii(
             case 4: { t = color.x; }
             default: { return; }
         }
+        radii[idx] = pow(
+            t * pow(r_bounds.x, magic) + (1.0 - t) * pow(r_bounds.y, magic),
+            1 / magic
+        );
         // radii[idx] = inverseSqrt(
         //     t / (r_bounds.x * r_bounds.x) + (1.0 - t) / (r_bounds.y * r_bounds.y)
         // );
-        radii[idx] = t * r_bounds.x + (1.0 - t) * r_bounds.y;
+        // radii[idx] = t * r_bounds.x + (1.0 - t) * r_bounds.y;
     }
 }
 
