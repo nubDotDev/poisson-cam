@@ -158,7 +158,8 @@ impl App {
 
     fn run(self) {
         let is_mapped = Arc::new(Mutex::new(false));
-        // let mut seed = 1;
+        let reseed = Arc::new(Mutex::new(false));
+        let mut seed = 1u32;
 
         let min_radius_slider: HtmlInputElement = self
             .document
@@ -260,6 +261,29 @@ impl App {
             .unwrap();
         closure.forget();
 
+        let reseed_checkbox: HtmlInputElement = self
+            .document
+            .get_element_by_id("reseed")
+            .expect_throw("reseed element not found")
+            .dyn_into()
+            .unwrap();
+        let queue = self.queue.clone();
+        let reseed2 = reseed.clone();
+        let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
+            let mut reseed = reseed2.lock().unwrap();
+            *reseed = e
+                .current_target()
+                .unwrap()
+                .dyn_into::<HtmlInputElement>()
+                .unwrap()
+                .checked();
+        });
+        let reseed2 = reseed.clone();
+        reseed_checkbox
+            .add_event_listener_with_callback("input", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+
         self.event_loop
             .run(move |event, target| {
                 if let Event::WindowEvent {
@@ -271,6 +295,12 @@ impl App {
 
                     match event {
                         WindowEvent::RedrawRequested => {
+                            let reseed = reseed2.lock().unwrap();
+                            if *reseed {
+                                seed += 1;
+                                self.poisson.set_seed(Some(seed));
+                            }
+
                             let mut encoder =
                                 self.device.create_command_encoder(&Default::default());
                             self.queue.copy_external_image_to_texture(
