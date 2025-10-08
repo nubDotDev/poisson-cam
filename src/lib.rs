@@ -24,7 +24,6 @@ pub fn main() {
 }
 
 struct App {
-    // TODO: Remove unnecessary Arcs.
     document: Document,
     event_loop: EventLoop<()>,
     window: Arc<Window>,
@@ -40,28 +39,32 @@ impl App {
     async fn new() -> App {
         use winit::platform::web::WindowBuilderExtWebSys;
 
-        let window_js = Arc::new(window().unwrap_throw());
-        let document = window_js.document().unwrap_throw();
+        let window_js = Arc::new(window().expect_throw("failed to get window"));
+        let document = window_js.document().expect_throw("failed to get document");
 
         // Stream webcam footage to video element.
         let webcam: HtmlVideoElement = document
             .get_element_by_id("webcam")
-            .unwrap_throw()
+            .expect_throw("webcam element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         let constraints = MediaStreamConstraints::new();
         constraints.set_video(&JsValue::TRUE);
         let stream = JsFuture::from(
             window_js
                 .navigator()
                 .media_devices()
-                .unwrap_throw()
+                .expect_throw("failed to get media devices")
                 .get_user_media_with_constraints(&constraints)
-                .unwrap_throw(),
+                .expect_throw("failed to get user media"),
         )
         .await
-        .unwrap_throw();
-        webcam.set_src_object(Some(&stream.dyn_into().unwrap_throw()));
+        .unwrap();
+        webcam.set_src_object(Some(
+            &stream
+                .dyn_into()
+                .expect_throw("failed to set webcam source"),
+        ));
 
         // Wait for the video element's metadata to load.
         // We cannot get the video dimensions until this event is triggered.
@@ -71,30 +74,39 @@ impl App {
         });
         webcam
             .add_event_listener_with_callback("loadedmetadata", closure.as_ref().unchecked_ref())
-            .unwrap();
+            .expect_throw("failed to add loadedmetadata event listener");
         closure.forget();
         rx.recv_async().await.unwrap();
 
         // Set canvas dimensions.
         let canvas: HtmlCanvasElement = document
             .get_element_by_id("canvas")
-            .unwrap_throw()
+            .expect_throw("canvas element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         canvas.set_width(webcam.video_width());
         canvas.set_height(webcam.video_height());
         let dims = [canvas.width() as u16, canvas.height() as u16];
 
         // Set up wgpu.
         env_logger::init();
-        let event_loop = winit::event_loop::EventLoop::new().unwrap_throw();
+        let event_loop =
+            winit::event_loop::EventLoop::new().expect_throw("failed to make event loop");
         let builder = winit::window::WindowBuilder::new().with_canvas(Some(canvas));
-        let window = Arc::new(builder.build(&event_loop).unwrap_throw());
+        let window = Arc::new(
+            builder
+                .build(&event_loop)
+                .expect_throw("failed to build window"),
+        );
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         });
-        let surface = Arc::new(instance.create_surface(window.clone()).unwrap_throw());
+        let surface = Arc::new(
+            instance
+                .create_surface(window.clone())
+                .expect_throw("failed to create surface"),
+        );
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -102,7 +114,7 @@ impl App {
                 compatible_surface: Some(&surface),
             })
             .await
-            .unwrap_throw();
+            .expect_throw("failed to get adapter");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -112,12 +124,12 @@ impl App {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .unwrap_throw();
+            .expect_throw("failed to get device and queue");
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let config = surface
             .get_default_config(&adapter, dims[0] as u32, dims[1] as u32)
-            .unwrap_throw();
+            .unwrap();
         surface.configure(&device, &config);
 
         let poisson = PoissonPixelPie::new(device.clone(), queue.clone(), dims, 1.0, Some(1));
@@ -151,9 +163,9 @@ impl App {
         let min_radius_slider: HtmlInputElement = self
             .document
             .get_element_by_id("min-radius")
-            .unwrap_throw()
+            .expect_throw("min-radius element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         let queue = self.queue.clone();
         let webcam_to_radii = self.webcam_to_radii.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -176,9 +188,9 @@ impl App {
         let max_radius_slider: HtmlInputElement = self
             .document
             .get_element_by_id("max-radius")
-            .unwrap_throw()
+            .expect_throw("max-radius element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         let queue = self.queue.clone();
         let webcam_to_radii = self.webcam_to_radii.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -201,9 +213,9 @@ impl App {
         let dot_radius_slider: HtmlInputElement = self
             .document
             .get_element_by_id("dot-radius")
-            .unwrap_throw()
+            .expect_throw("dot-radius element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         let queue = self.queue.clone();
         let plotter = self.plotter.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -226,9 +238,9 @@ impl App {
         let magic_slider: HtmlInputElement = self
             .document
             .get_element_by_id("magic")
-            .unwrap_throw()
+            .expect_throw("magic element not found")
             .dyn_into()
-            .unwrap_throw();
+            .unwrap();
         let queue = self.queue.clone();
         let webcam_to_radii = self.webcam_to_radii.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |e: web_sys::Event| {
@@ -266,9 +278,9 @@ impl App {
                                     source: wgpu::ExternalImageSource::HTMLVideoElement(
                                         self.document
                                             .get_element_by_id("webcam")
-                                            .unwrap_throw()
+                                            .expect_throw("webcam element not found")
                                             .dyn_into()
-                                            .unwrap_throw(),
+                                            .unwrap(),
                                     ),
                                     origin: wgpu::Origin2d::ZERO,
                                     flip_y: false,
@@ -311,7 +323,9 @@ impl App {
                                 buff.unmap();
                                 queue.submit([]);
 
-                                let frame = surface.get_current_texture().unwrap_throw();
+                                let frame = surface
+                                    .get_current_texture()
+                                    .expect_throw("failed to get current texture");
                                 let view = frame.texture.create_view(&Default::default());
                                 plotter.run(&mut encoder, &view, points_length);
 
@@ -329,7 +343,7 @@ impl App {
                     }
                 }
             })
-            .unwrap_throw();
+            .expect_throw("event loop terminated with an error");
     }
 }
 
